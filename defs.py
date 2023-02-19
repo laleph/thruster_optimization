@@ -13,7 +13,7 @@ from scipy.interpolate import RegularGridInterpolator
 
 # parameters
 strength = 1000  # mT magnetization
-nres = 200  # resolution in z and r
+nres = 400  # resolution in z and r
 
 # field lines
 offset = 10  # distance from the symmetry and wall
