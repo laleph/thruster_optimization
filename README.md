@@ -8,7 +8,7 @@ Please also install magpylib with [pip](https://pypi.org/project/pip/),
 pip install magpylib
 ```
 
-or with [conda](https://docs.conda.io/en/latest/).
+or with [conda](https://docs.conda.io/en/latest/)
 
 ```console
 conda install -c conda-forge magpylib
