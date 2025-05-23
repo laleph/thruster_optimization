@@ -12,6 +12,7 @@ from defs import (
     parallelism,
     active_volume,
     add_lengths_to_df,  # Import necessary items from defs
+    integration,  # Import the integration function
 )
 from pandas.testing import assert_frame_equal  # For DataFrame comparison
 
@@ -449,3 +450,48 @@ def test_add_lengths_to_df_with_zeros():
 # *   Edge case: DataFrame with zeros, checking correct calculations involving zero (e.g., `sqrt(0)`, `exp(0)`).
 
 # Imports for `pandas` and `numpy` are present, and `add_lengths_to_df` is correctly imported. Comparisons use `np.isclose` for floats and `pd.testing.assert_frame_equal` for the empty DataFrame structure. The logic for expected values in each test case, including normalization and handling of `NaN` or zeros, matches the subtask description.
+
+
+# Tests for integration function
+def test_integration_runs():
+    # Arrange
+    R_test = 20
+    L_test = 50
+    dR_test = 2
+    rlines, Brinterp, Bzinterp, parallel, _, _, zsep, _ = ring_calculation(
+        R_test, L_test, dR_test, plt_on=False
+    )
+    df_columns = ["R", "L", "dR", "parallelism", "zsep_L", "va", "r0", "mr", "length"]
+    df_initial = pd.DataFrame(columns=df_columns)
+
+    # Act
+    df_output = integration(
+        R_test,
+        L_test,
+        dR_test,
+        df_initial.copy(),
+        rlines,
+        Brinterp,
+        Bzinterp,
+        parallel,
+        zsep,
+        plt_on=False,
+        ax=None,
+    )
+
+    # Assert
+    assert not df_output.empty, "DataFrame should not be empty after integration"
+    assert list(df_output.columns) == df_columns, "DataFrame columns do not match expected"
+    assert len(df_output) == len(rlines), "DataFrame should have one row per r0 line"
+    assert pd.api.types.is_numeric_dtype(
+        df_output["length"]
+    ), "'length' column should be numeric"
+    assert pd.api.types.is_numeric_dtype(df_output["mr"]), "'mr' column should be numeric"
+    assert pd.api.types.is_numeric_dtype(df_output["va"]), "'va' column should be numeric"
+    assert pd.api.types.is_numeric_dtype(df_output["r0"]), "'r0' column should be numeric"
+    assert df_output["R"].iloc[0] == R_test
+    assert df_output["L"].iloc[0] == L_test
+    assert df_output["dR"].iloc[0] == dR_test
+    assert set(df_output["r0"]) == set(
+        rlines
+    ), "All input r0 lines should be in the output r0 column"

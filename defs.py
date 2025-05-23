@@ -4,10 +4,12 @@ import magpylib as magpy
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from magpylib.magnet import Cylinder, CylinderSegment
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Rectangle
 from scipy.interpolate import RegularGridInterpolator
+from scipy.integrate import solve_ivp
 
 # TODO put params and interpolation arrays in a class/dict
 
@@ -193,3 +195,95 @@ def ring_calculation(R=20, L=50, dR=2, plt_on=False, ax=None):
 
     # return for integration and plotting
     return r0, interp_r, interp_z, pa, zz, rr, zsep, magnet
+
+
+def integration(
+    R, L, dR, df, rlines, interp_r, interp_z, parallel, zsep, plt_on=False, ax=None
+):
+    def field(t, y):
+        """return the interpolated magnetic field (Bz,Br) at point (z,r)
+        here used as the derivative f(y) = dy/dx in an ODE"""
+        z, r = y
+        bz = interp_z([r, z], method="linear")[0]
+        br = interp_r([r, z], method="linear")[0]
+        b = np.linalg.norm([bz, br])
+        dz = bz / b
+        dr = br / b
+        return [
+            -dz,
+            -dr,
+        ]  # opposed direction is necessary for integration in positive z direction
+
+    def hit_wall(t, y):
+        """end criterion for field line integration/ODE"""
+
+        eps = 1e-1  # stop a bit before the wall, else motion integration parallel z is possible before the wall,
+        # see scaling of R
+        return y[1] - R + eps
+
+    # settings
+    hit_wall.terminal = True
+    hit_wall.direction = 1
+
+    maxstep = 0.3  # max. integration step
+
+    # integration for all field lines
+    z0 = 0
+    for r0 in rlines:  # > 0!
+
+        # bfield at starting point (0) -> mirror ratio mr
+        bz0 = interp_z([r0, z0], method="linear")[0]
+        br0 = interp_r([r0, z0], method="linear")[0]
+        b0 = np.linalg.norm([bz0, br0])
+
+        # integration of the field line(s)
+        sol = solve_ivp(
+            field,
+            [0, 1000],
+            [z0, r0],
+            events=hit_wall,
+            method="RK45",
+            max_step=maxstep,
+            atol=1e-4,
+            rtol=1e-7,
+        )  # was DOP853
+        # TODO some integrations with DOP853 seem to quit after some steps??
+
+        # calculate the length of each field line
+        s = np.sqrt(np.power(np.diff(sol.y[0]), 2) + np.power(np.diff(sol.y[1]), 2))
+        length = np.sum(s)  # not weighted length, that is done later
+        # print(s.shape, length)
+
+        # bfield at wall (w) -> mirror ratio mr
+        rw = sol.y[1][-1]
+        zw = sol.y[0][-1]
+        bzw = interp_z([rw, zw], method="linear")[0]
+        brw = interp_r([rw, zw], method="linear")[0]
+        bw = np.linalg.norm([bzw, brw])
+        mr = bw / b0  # mirror ratio
+
+        # active volume va
+        va = active_volume(sol.y[0], sol.y[1], L, R)
+
+        if plt_on:
+            if ax is None:
+                plt.plot(sol.y[0], sol.y[1], "red")
+            else:
+                ax.plot(sol.y[0], sol.y[1], "red")
+
+        # put results of each field line into df
+        df = pd.concat(
+            [
+                pd.DataFrame(
+                    [[R, L, dR, parallel, zsep - 0.5 * L, va, r0, mr, length]],
+                    columns=df.columns,
+                ),
+                df,
+            ],
+            ignore_index=True,
+        )
+
+    if plt_on and ax is None:
+        plt.savefig("R" + str(R) + "L" + str(L) + ".png", dpi=300)
+
+    return df
