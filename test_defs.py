@@ -1,12 +1,12 @@
 from typing import List, Tuple, Dict, Any, Optional
 import numpy as np
 import pandas as pd
-from pytest_mock import MockerFixture  # type: ignore[import-not-found]
+from pytest_mock import MockerFixture
 from unittest.mock import Mock
 # import pytest  # For mocker
-from scipy.interpolate import RegularGridInterpolator  # type: ignore[import-not-found]
-from magpylib.magnet import CylinderSegment  # type: ignore[import-not-found]
-from defs import (  # type: ignore[import-not-found]
+from scipy.interpolate import RegularGridInterpolator
+from magpylib.magnet import CylinderSegment
+from defs import (
     find_separatrix,
     nres,
     nlines,

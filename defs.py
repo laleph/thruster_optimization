@@ -1,16 +1,17 @@
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any, Optional
 
-import magpylib as magpy  # type: ignore[import-not-found]
-import matplotlib as mpl  # type: ignore[import-not-found]
-import matplotlib.pyplot as plt  # type: ignore[import-not-found]
+import magpylib as magpy
+import matplotlib as mpl
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from magpylib.magnet import CylinderSegment  # type: ignore[import-not-found]
-from matplotlib.collections import PatchCollection  # type: ignore[import-not-found]
-from matplotlib.patches import Rectangle  # type: ignore[import-not-found]
-from scipy.interpolate import RegularGridInterpolator  # type: ignore[import-not-found]
-from scipy.integrate import solve_ivp  # type: ignore[import-not-found]
+from magpylib.magnet import CylinderSegment
+from matplotlib.collections import PatchCollection
+from matplotlib.patches import Rectangle
+from scipy.interpolate import RegularGridInterpolator
+from scipy.integrate import solve_ivp
+
 
 # TODO put params and interpolation arrays in a class/dict
 
