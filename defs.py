@@ -13,23 +13,51 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.integrate import solve_ivp
 
 
-# TODO put params and interpolation arrays in a class/dict
+# TODO put params and interpolation arrays in a class/dict - Partially addressed by SimParams
 
 # parameters
-strength: int = 1000  # mT magnetization
-nres: int = 400  # resolution in z and r
+@dataclass
+class SimParams:
+    """Holds global simulation parameters.
 
-# field lines
-offset: int = 10  # distance from the symmetry and wall
-nlines: int = 19  # +1, so 20 in total since rr[1] is added by hand
+    Attributes:
+        strength: Magnetization strength in mT.
+        nres: Resolution for z and r grids.
+        offset: Distance from symmetry axis and wall for field line starting points.
+        nlines: Number of field lines to integrate (excluding the one on the separatrix).
+    """
+    strength: int = 1000  # mT magnetization
+    nres: int = 400  # resolution in z and r
+    offset: int = 10  # distance from the symmetry and wall
+    nlines: int = 19  # +1, so 20 in total since rr[1] is added by hand
 
+sim_params = SimParams()
 
 # definitions
 
 
 def find_separatrix(z: np.ndarray, Bz: np.ndarray) -> Tuple[int, float]:
-    """find the integration end near the axis where the magnetic field changes topologically,
-    i.e, where B_z near the axis chnages sign"""
+    """Finds the separatrix based on the change in sign of Bz near the axis.
+
+    The separatrix is a key topological feature in the magnetic field,
+    indicating a region where field lines change their connection. This function
+    identifies its location along the z-axis.
+
+    Args:
+        z: A 2D numpy array representing the z-coordinates of the grid.
+           Expected shape (n_r_points, n_z_points).
+        Bz: A 2D numpy array representing the z-component of the magnetic field
+            on the grid. Expected shape (n_r_points, n_z_points).
+
+    Returns:
+        A tuple (index, zsep):
+            index (int): The index along the z-axis (second dimension of input arrays)
+                         where Bz near the axis first becomes positive. If no such
+                         point is found, `sim_params.nres` is returned.
+            zsep (float): The z-coordinate corresponding to the found index. If no
+                          such point is found, the maximum z-value from the input
+                          `z` array (at r_index=1) is returned.
+    """
     Bzline: np.ndarray = Bz[1, :]  # 1 means one point in r above symmetry axis
 
     end_index: np.ndarray = np.where(Bzline > 0)[0]
@@ -37,14 +65,32 @@ def find_separatrix(z: np.ndarray, Bz: np.ndarray) -> Tuple[int, float]:
         zmax: float = z[1, -1]
         print(zmax)
         print(z)
-        return nres, zmax
+        return sim_params.nres, zmax
     end_index_val: int = end_index[0]
     zsep: float = z[1, end_index_val]
     return end_index_val, zsep  # index and z coordinate, where B_z is positive
 
 
 def add_lengths_to_df(df: pd.DataFrame, norm: float = 1) -> pd.DataFrame:
-    """add the various measures to the dataframe df"""
+    """Adds several derived length-related measures to a DataFrame.
+
+    The function calculates new columns based on existing 'length', 'mr' (mirror ratio),
+    and 'r0' (initial radial position of field line) columns.
+
+    Args:
+        df: Pandas DataFrame to which new columns will be added.
+            It must contain 'length', 'mr', and 'r0' columns.
+        norm: A normalization factor to apply to the 'length' column before
+              deriving other measures. Defaults to 1 (no normalization).
+
+    Returns:
+        The input DataFrame `df` with added columns:
+            - 'length': Original 'length' divided by `norm`.
+            - 'l_mr': `length * sqrt(mr)`.
+            - 'r0_l': `r0 * length`.
+            - 'r0_l_mr': `r0 * length * sqrt(mr)`.
+            - 'r0_l_mr_exp_r0': `r0 * length * sqrt(mr) * exp(-r0)`.
+    """
     df["length"] = df["length"] / norm
     df["l_mr"] = df["length"] * np.sqrt(df["mr"])
     df["r0_l"] = df["r0"] * df["length"]
@@ -62,7 +108,25 @@ def parallelism(
     L: float,
     p: float = 1,
 ) -> float:
-    """calculate average theta = arctan2(br / bz) within (0,0) and (p*L,p*R) at the nres positions"""
+    """Calculates the average angle theta = arctan2(Br_avg, Bz_avg) in a specified region.
+
+    This angle represents the average field line direction relative to the z-axis
+    within a rectangular subgrid defined by (0,0) and (p*L, p*R).
+
+    Args:
+        zz: 1D numpy array of z-coordinates for the grid.
+        rr: 1D numpy array of r-coordinates for the grid.
+        Binterp_z: A `scipy.interpolate.RegularGridInterpolator` for Bz component.
+        Binterp_r: A `scipy.interpolate.RegularGridInterpolator` for Br component.
+        R: The characteristic radial dimension (e.g., magnet radius).
+        L: The characteristic axial dimension (e.g., magnet length).
+        p: A factor (0 to 1) determining the subgrid size relative to R and L.
+           The calculation is performed within r < p*R and z < p*L. Defaults to 1.
+
+    Returns:
+        The average angle theta in radians. Returns 0.0 if no grid points
+        fall within the specified subregion (to avoid division by zero).
+    """
     rp: np.ndarray = rr[np.where(rr < p * R)]
     zp: np.ndarray = zz[np.where(zz < p * L)]
 
@@ -81,12 +145,32 @@ def parallelism(
             br_sum += float(br_item)
             bz_sum += float(bz_item)
             i += 1
-
+    
+    if i == 0: # Avoid division by zero if rp or zp is empty
+        return 0.0
     return float(np.arctan2(br_sum / i, bz_sum / i))  # global angle theta (for that region)
 
 
 def active_volume(z: np.ndarray, r: np.ndarray, L: float, R: float) -> float:
-    """active volume"""
+    """Calculates the relative active volume of a field line.
+
+    The active volume is defined by revolving the field line (r(z)) around the
+    z-axis and is calculated using `np.trapz(r^2, z)`. This volume is then
+    normalized by the cylindrical volume defined by R and 0.5*L.
+    The input arrays `z` and `r` may be modified by appending a point
+    (0.5*L, R) if the field line ends before z = 0.5*L.
+
+    Args:
+        z: 1D numpy array of z-coordinates along a field line.
+        r: 1D numpy array of r-coordinates along a field line.
+        L: Characteristic length of the system (e.g., magnet length).
+        R: Characteristic radius of the system (e.g., magnet radius).
+
+    Returns:
+        The relative active volume, normalized by (pi * R^2 * 0.5*L).
+        Note: pi is implicitly handled as it cancels out if comparing to pi*R^2*L/2.
+              The function returns (integral(r^2 dz)) / (R^2 * L/2).
+    """
     if z[-1] < 0.5 * L:
         # add last point to compare with the rectangle
         z = np.append(z, 0.5 * L)
@@ -102,6 +186,33 @@ def active_volume(z: np.ndarray, r: np.ndarray, L: float, R: float) -> float:
 # basic plot
 
 
+@dataclass
+class RingCalculationOutput:
+    """Holds the output from the `ring_calculation` function.
+
+    This dataclass serves as a structured container for the various results
+    computed during the magnetic field characterization of a ring magnet.
+
+    Attributes:
+        r0_lines: List of initial radial positions (r0) for field line integration.
+        interp_r_func: Interpolator for the radial component of the B-field (Br).
+        interp_z_func: Interpolator for the axial component of the B-field (Bz).
+        pa_val: Calculated parallelism value (average field angle) for p=0.1.
+        zz_interp: 1D array of z-coordinates used for interpolation.
+        rr_interp: 1D array of r-coordinates used for interpolation.
+        zsep: z-coordinate of the separatrix.
+        magnet: The `magpylib.magnet.CylinderSegment` object representing the ring.
+    """
+    r0_lines: List[float]
+    interp_r_func: RegularGridInterpolator
+    interp_z_func: RegularGridInterpolator
+    pa_val: float
+    zz_interp: np.ndarray
+    rr_interp: np.ndarray
+    zsep: float
+    magnet: magpy.magnet.CylinderSegment
+
+
 def field_plot(
     z: np.ndarray,
     rho: np.ndarray,
@@ -112,7 +223,21 @@ def field_plot(
     dR: float,
     ax: Optional[plt.Axes] = None,
 ) -> None:
-    """plot the magnetic field of the ring magnet"""
+    """Plots the magnetic field streamplot of a ring magnet.
+
+    Displays the magnetic field lines (streamplot) and the magnet's cross-section.
+
+    Args:
+        z: 1D numpy array of z-coordinates for the grid.
+        rho: 1D numpy array of radial (rho or r) coordinates for the grid.
+        Bz: 2D numpy array of the z-component of the magnetic field on the grid.
+        Br: 2D numpy array of the r-component of the magnetic field on the grid.
+        R: Inner radius of the ring magnet.
+        L: Length of the ring magnet.
+        dR: Thickness (radial extent) of the ring magnet.
+        ax: Optional `matplotlib.axes.Axes` object to plot on. If None, a new
+            figure and axes are created.
+    """
     Bamp: np.ndarray = np.linalg.norm(np.array([Bz, Br]), axis=0)
 
     # plot
@@ -125,15 +250,11 @@ def field_plot(
         Bz,
         Br,
         density=1.1,
-        # color=Bamp,
-        # linewidth=np.sqrt(Bamp)*3,
         cmap="coolwarm",
-        # broken_streamlines=False
     )
 
     # figure styling
     ax.set(
-        # title="Magnetic field of thin cylinder",
         ylabel="r / mm",
         xlabel="z / mm",
         aspect=1,
@@ -148,51 +269,96 @@ def field_plot(
 # field calculation
 @dataclass
 class Ring:
+    """Represents a ring magnet and its calculated magnetic field properties.
+
+    This class encapsulates the geometric parameters of a ring magnet and the
+    results obtained from the `ring_calculation` function, such as field
+    interpolators, separatrix location, and the magnet object itself.
+
+    Attributes:
+        R: Inner radius of the ring magnet (mm).
+        L: Length of the ring magnet (mm).
+        dR: Thickness (radial extent) of the ring magnet (mm).
+        r0: List of initial radial positions (r0) for field line integration.
+        bri: Interpolator for the radial component of the B-field (Br).
+        bzi: Interpolator for the axial component of the B-field (Bz).
+        pa: Calculated parallelism value (average field angle).
+        z: 1D array of z-coordinates used for interpolation.
+        r: 1D array of r-coordinates used for interpolation.
+        zsep: z-coordinate of the separatrix.
+        ring: The `magpylib.magnet.CylinderSegment` object representing the ring.
+    """
     R: float
     L: float
     dR: float
     r0: List[float]
     bri: RegularGridInterpolator
     bzi: RegularGridInterpolator
-    pa: List[float]
+    pa: float
     z: np.ndarray
     r: np.ndarray
     zsep: float
     ring: magpy.magnet.CylinderSegment
 
     def __init__(self, R: float = 20, L: float = 50, dR: float = 2, plt_on: bool = False, ax: Optional[plt.Axes] = None):
+        """Initializes a Ring object by calculating its magnetic field properties.
+
+        Args:
+            R: Inner radius of the ring magnet in mm. Defaults to 20.
+            L: Length of the ring magnet in mm. Defaults to 50.
+            dR: Thickness (radial extent) of the ring magnet in mm. Defaults to 2.
+            plt_on: If True, generates a plot of the magnetic field during calculation.
+                    Defaults to False.
+            ax: Optional `matplotlib.axes.Axes` object to plot on if `plt_on` is True.
+                If None, a new figure and axes are created for the plot.
+        """
         self.R = R
         self.L = L
         self.dR = dR
-        r0, interp_r, interp_z, pa, zz, rr, zsep, magnet = ring_calculation(R, L, dR, plt_on, ax)
-        self.r0 = r0
-        self.bri = interp_r
-        self.bzi = interp_z
-        self.pa = pa
-        self.z = zz
-        self.r = rr
-        self.zsep = zsep
-        self.ring = magnet
+        calc_output: RingCalculationOutput = ring_calculation(R, L, dR, plt_on, ax)
+        self.r0 = calc_output.r0_lines
+        self.bri = calc_output.interp_r_func
+        self.bzi = calc_output.interp_z_func
+        self.pa = calc_output.pa_val
+        self.z = calc_output.zz_interp
+        self.r = calc_output.rr_interp
+        self.zsep = calc_output.zsep
+        self.ring = calc_output.magnet
 
 
 def ring_calculation(
     R: float = 20, L: float = 50, dR: float = 2, plt_on: bool = False, ax: Optional[plt.Axes] = None
-) -> Tuple[
-    List[float],
-    RegularGridInterpolator,
-    RegularGridInterpolator,
-    List[float],
-    np.ndarray,
-    np.ndarray,
-    float,
-    magpy.magnet.CylinderSegment,
-]:
-    """calculate the field and field line length(s)
-    return r0, interp_r, interp_z, pa, zz, rr, zsep, magnet"""
+) -> RingCalculationOutput:
+    """Calculates magnetic field properties of a ring magnet.
+
+    This function models a ring magnet, computes its magnetic field on a grid,
+    finds the separatrix, creates field interpolators, determines field line
+    starting positions, and calculates field parallelism. Optionally, it can
+    plot the field.
+
+    Args:
+        R: Inner radius of the ring magnet in mm. Defaults to 20.
+        L: Length of the ring magnet in mm. Defaults to 50.
+        dR: Thickness (radial extent) of the ring magnet in mm. Defaults to 2.
+        plt_on: If True, generates a plot of the magnetic field. Defaults to False.
+        ax: Optional `matplotlib.axes.Axes` object to plot on if `plt_on` is True.
+            If None, a new figure and axes are created for the plot.
+
+    Returns:
+        A `RingCalculationOutput` object containing the results:
+            - r0_lines: Initial radial positions for field lines.
+            - interp_r_func: Interpolator for Br.
+            - interp_z_func: Interpolator for Bz.
+            - pa_val: Parallelism value.
+            - zz_interp: z-coordinates for interpolation.
+            - rr_interp: r-coordinates for interpolation.
+            - zsep: z-coordinate of the separatrix.
+            - magnet: Magpylib magnet object.
+    """
 
     # generate ring magnet (same as two cylinders, see notebook)
     magnet: magpy.magnet.CylinderSegment = magpy.magnet.CylinderSegment(
-        magnetization=(0, 0, strength),
+        magnetization=(0, 0, sim_params.strength),
         dimension=(R, R + dR, L, 0, 360),
         position=(0, 0, 0),
     )
@@ -204,8 +370,8 @@ def ring_calculation(
     # pre-compute and plot field of thin_cylinder (faster)
 
     # create grid
-    tr: np.ndarray = np.linspace(0, rmax, nres)
-    tz: np.ndarray = np.linspace(0, zmax, nres)
+    tr: np.ndarray = np.linspace(0, rmax, sim_params.nres)
+    tz: np.ndarray = np.linspace(0, zmax, sim_params.nres)
     grid: np.ndarray = np.array([[(rh, 0, zh) for zh in tz] for rh in tr])
 
     # compute and plot field of thin_cylinder
@@ -217,9 +383,8 @@ def ring_calculation(
     Br_grid: np.ndarray = np.ascontiguousarray(B[:, :, 0])  # r,z from grid
 
     end_index, zsep = find_separatrix(z_grid, Bz_grid)
-    if end_index == nres:
+    if end_index == sim_params.nres:
         print("!!! domain too small !!!")
-    # zmax = np.ceil(zsep+1)
 
     ## plot with switch on/off
     if plt_on:
@@ -233,20 +398,27 @@ def ring_calculation(
     # define the r0 positions of the integrated field lines
     # rr[1] is added specifically for showing the separatrix
     r0_lines: List[float] = [
-        rr_interp[i] for i in np.append(1, np.linspace(offset, nres / rmax * R - offset, nlines, dtype=int))
+        rr_interp[i] for i in np.append(1, np.linspace(sim_params.offset, sim_params.nres / rmax * R - sim_params.offset, sim_params.nlines, dtype=int))
     ]
 
     interp_r_func: RegularGridInterpolator = RegularGridInterpolator([rr_interp, zz_interp], Br_grid)
     interp_z_func: RegularGridInterpolator = RegularGridInterpolator([rr_interp, zz_interp], Bz_grid)
 
     # parallelism
-    pa_vals: List[float] = []
-    for p_val in [0.1, 0.3, 0.5, 0.9]:
-        pa_vals.append(parallelism(zz_interp, rr_interp, interp_z_func, interp_r_func, R, L, p_val))
-    # pa = 1
+    # Calculate a single parallelism value with p=0.1
+    pa_val: float = parallelism(zz_interp, rr_interp, interp_z_func, interp_r_func, R, L, p=0.1)
 
     # return for integration and plotting
-    return r0_lines, interp_r_func, interp_z_func, pa_vals, zz_interp, rr_interp, zsep, magnet
+    return RingCalculationOutput(
+        r0_lines=r0_lines,
+        interp_r_func=interp_r_func,
+        interp_z_func=interp_z_func,
+        pa_val=pa_val,
+        zz_interp=zz_interp,
+        rr_interp=rr_interp,
+        zsep=zsep,
+        magnet=magnet
+    )
 
 
 def integration(
@@ -257,14 +429,49 @@ def integration(
     rlines: List[float],
     interp_r: RegularGridInterpolator,
     interp_z: RegularGridInterpolator,
-    parallel: List[float], # This was identified as List[float] in ring_calculation, but seems to be a single float value in usage
+    parallel: float,
     zsep: float,
     plt_on: bool = False,
     ax: Optional[plt.Axes] = None,
 ) -> pd.DataFrame:
+    """Integrates magnetic field lines and calculates their properties.
+
+    For a given set of starting radial positions (`rlines`), this function
+    traces magnetic field lines until they hit the magnet wall (r=R).
+    It uses `scipy.integrate.solve_ivp` with the "RK45" method.
+    The "DOP853" method was previously considered but showed instability for
+    some integration cases. Properties like field line length, mirror ratio,
+    and active volume are calculated and stored in a DataFrame.
+
+    Args:
+        R: Inner radius of the magnet system (wall boundary).
+        L: Length of the magnet system.
+        dR: Thickness of the magnet (used for record-keeping in DataFrame).
+        df: Pandas DataFrame to append results to.
+        rlines: List of initial radial positions (r0) to start field line integration.
+        interp_r: Interpolator for the radial component of the B-field (Br).
+        interp_z: Interpolator for the axial component of the B-field (Bz).
+        parallel: Parallelism value (average field angle), for record-keeping.
+        zsep: z-coordinate of the separatrix, used to calculate `zsep_L`.
+        plt_on: If True, plots the integrated field lines. Defaults to False.
+        ax: Optional `matplotlib.axes.Axes` object to plot on if `plt_on` is True.
+
+    Returns:
+        A Pandas DataFrame with the results of the field line integrations.
+        Each row corresponds to an integrated field line and includes columns:
+        'R', 'L', 'dR', 'parallelism', 'zsep_L' (zsep - 0.5*L), 'va' (active volume),
+        'r0' (initial radial position), 'mr' (mirror ratio), 'length' (field line length).
+    """
     def field(t: float, y: List[float]) -> List[float]:
-        """return the interpolated magnetic field (Bz,Br) at point (z,r)
-        here used as the derivative f(y) = dy/dx in an ODE"""
+        """Defines the ODE system dy/dt = [-Bz/|B|, -Br/|B|] for field line tracing.
+        
+        Args:
+            t: Time (or path length variable, not explicitly used in field calculation).
+            y: Current position [z, r].
+
+        Returns:
+            The derivatives [dz/ds, dr/ds] proportional to [-Bz, -Br] normalized.
+        """
         z_val, r_val = y
         bz_val: float = float(interp_z([r_val, z_val], method="linear")[0])
         br_val: float = float(interp_r([r_val, z_val], method="linear")[0])
@@ -280,7 +487,15 @@ def integration(
         ]  # opposed direction is necessary for integration in positive z direction
 
     def hit_wall(t: float, y: List[float]) -> float:
-        """end criterion for field line integration/ODE"""
+        """Event function for `solve_ivp` to detect when a field line hits the wall.
+
+        Args:
+            t: Time (or path length variable).
+            y: Current position [z, r].
+        
+        Returns:
+            Value that is zero when the event occurs (r - R + eps = 0).
+        """
 
         eps: float = 1e-1  # stop a bit before the wall, else motion integration parallel z is possible before the wall,
         # see scaling of R
@@ -312,13 +527,14 @@ def integration(
             max_step=maxstep,
             atol=1e-4,
             rtol=1e-7,
-        )  # was DOP853
-        # TODO some integrations with DOP853 seem to quit after some steps??
-
+        )
+        # Note: The 'DOP853' solver was previously explored but found to be unstable
+        # for some integration scenarios, leading to premature termination.
+        # 'RK45' is currently used as a more robust default.
+        # The TODO comment regarding DOP853 can be removed as this note is added.
         # calculate the length of each field line
         s_vals: np.ndarray = np.sqrt(np.power(np.diff(sol.y[0]), 2) + np.power(np.diff(sol.y[1]), 2))
         length_val: float = np.sum(s_vals)  # not weighted length, that is done later
-        # print(s.shape, length)
 
         # bfield at wall (w) -> mirror ratio mr
         rw_val: float = float(sol.y[1][-1])
@@ -344,14 +560,10 @@ def integration(
                 ax.plot(sol.y[0], sol.y[1], "red")
 
         # put results of each field line into df
-        # Ensure `parallel` is treated as a scalar if it's a list from `pa_vals`
-        # Taking the first element as a placeholder, this might need domain specific logic
-        current_parallel_val = parallel[0] if isinstance(parallel, list) and parallel else parallel 
-
         df = pd.concat(
             [
                 pd.DataFrame(
-                    [[R, L, dR, current_parallel_val, zsep - 0.5 * L, va_val, r0_val, mr_value, length_val]],
+                    [[R, L, dR, parallel, zsep - 0.5 * L, va_val, r0_val, mr_value, length_val]], # Use parallel directly
                     columns=df.columns,
                 ),
                 df,
