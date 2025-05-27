@@ -1,12 +1,12 @@
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Any, Optional
 
 import magpylib as magpy
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from magpylib.magnet import CylinderSegment
+# from magpylib.magnet import CylinderSegment
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Rectangle
 from scipy.interpolate import RegularGridInterpolator
